@@ -20,10 +20,12 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  # Pinned exactly: MorphText reads glyph outlines and pairs them through
-  # morphnext's internals (lib/src/engine.dart). Re-read those files before
-  # any bump; see upstream/ for the two ways out of the pin.
-  morphnext: 0.6.1
+  # MorphText reads glyph outlines and pairs them through morphnext's public
+  # glyph API (lib/src/engine.dart): 0.7.1 places glyphs without sampling
+  # them again, and adds MorphFont.axes. The API is experimental until
+  # morphnext 1.0 and may change in a minor release, so the range stops
+  # before 0.8.
+  morphnext: ^0.7.1
 
 dev_dependencies:
   flutter_test:
