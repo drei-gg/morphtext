@@ -1,3 +1,14 @@
+## 0.2.1
+
+- Depends on `morphnext: ^0.7.1` instead of pinning `0.6.1`, so apps can use
+  morphtext alongside current morphnext. MorphText now reads glyphs and plans
+  morphs through morphnext's public glyph API (`MorphFont`, `MorphOutline`,
+  `MorphOutlinePlan`), which shipped in 0.7.0. Thanks to KickNext, who
+  shipped the API and ported morphtext onto it
+  ([#1](https://github.com/drei-gg/morphtext/pull/1)). Morphs look the same;
+  in a few letter pairs, points in mid-flight frames pair slightly
+  differently.
+
 ## 0.2.0
 
 - The system font morphs on iOS, with nothing bundled. SF Pro can't ship in
