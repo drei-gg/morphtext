@@ -1,99 +1,70 @@
-// ignore_for_file: implementation_imports
-//
 // The seam to morphnext (KickNext, MIT, github.com/KickNext/morphnext): the
-// only file in morphtext that touches its outline engine. It rests on
-// morphnext 0.6.1's internals (src/font, src/geometry), not its public
-// widgets, which is why pubspec.yaml pins that version exactly.
+// only file in morphtext that touches its outline engine, through the public
+// glyph API morphnext ships since 0.7 (MorphFont, MorphGlyph, MorphOutline,
+// MorphOutlinePlan).
 //
-// The surface below is the small public API proposed upstream
-// (upstream/ISSUE.md): read a glyph's outline from font bytes by code point,
-// and plan a morph between two outlines. Once morphnext ships it, this file
-// becomes upstream/engine_public_api.dart and the pin becomes a range.
+// morphnext puts a glyph's baseline at y = 0; morphtext measures y down from
+// the font's ascender. Each glyph is moved down by its ascender as it's read,
+// so everything past this file keeps the ascender frame.
 
 import 'dart:typed_data';
+import 'dart:ui' show Offset;
 
-import 'package:morphnext/src/font/open_type_font.dart';
-import 'package:morphnext/src/geometry/morph_plan.dart';
-import 'package:morphnext/src/geometry/resample.dart';
-import 'package:morphnext/src/geometry/shape.dart';
+import 'package:morphnext/morphnext.dart';
 
 /// A font file, parsed once (TrueType `glyf` or CFF outlines).
 final class GlyphFont {
   /// Parses [bytes] of an OpenType font file.
-  GlyphFont.parse(Uint8List bytes)
-    : this._(OpenTypeFont.parse(bytes), defaultFontVariationSelection);
+  GlyphFont.parse(Uint8List bytes) : this._(MorphFont.parse(bytes), null, null);
 
-  GlyphFont._(this._font, this._variation);
+  GlyphFont._(this._font, this._weight, this._opticalSize);
 
-  final OpenTypeFont _font;
-  final FontVariationSelection _variation;
+  final MorphFont _font;
+  final double? _weight;
+  final double? _opticalSize;
 
   /// The design axes of a variable font, by tag (`wght`, `opsz`, ...);
   /// empty for a static one.
-  Set<String> get axes => _font.variationAxes.keys.toSet();
+  Set<String> get axes => _font.axes;
 
   /// The same font at [weight] and [opticalSize] on its `wght` and `opsz`
   /// axes, each clamped to the axis and ignored where the font has no such
   /// axis. Null leaves an axis at its default. Shares the parsed file.
-  GlyphFont varied({double? weight, double? opticalSize}) => GlyphFont._(
-    _font,
-    (fill: null, weight: weight, grade: null, opticalSize: opticalSize),
-  );
+  GlyphFont varied({double? weight, double? opticalSize}) =>
+      GlyphFont._(_font, weight, opticalSize);
 
   /// The outline of [codePoint], or null when the font lacks it or it has no
   /// contours (a space).
   GlyphShape? shape(int codePoint) {
     final outline = this.outline(codePoint);
     if (outline == null) return null;
-    return GlyphShape._(_sample(outline._contours), outline.ascender);
+    return GlyphShape._(outline._outline, outline.ascender);
   }
 
   /// The unsampled outline of [codePoint], to place with others in one
   /// shape ([GlyphShape.placed]), or null as for [shape].
   GlyphOutline? outline(int codePoint) {
-    if (!_font.containsCodePoint(codePoint)) return null;
-    final outline = _font.glyphForCodePoint(codePoint, _variation);
-    final upm = outline.metrics.unitsPerEm.toDouble();
-    final asc = outline.metrics.ascender.toDouble();
-    if (upm <= 0 || outline.contours.isEmpty) return null;
-    // Normalised to the em: x from the pen, y down from the ascender.
-    return GlyphOutline._([
-      for (final c in outline.contours)
-        CubicContour(
-          Float64List.fromList([
-            for (var k = 0; k < c.points.length; k += 2) ...[
-              c.points[k] / upm,
-              (asc - c.points[k + 1]) / upm,
-            ],
-          ]),
-        ),
-    ], asc / upm);
-  }
-
-  static MorphShape _sample(List<CubicContour> contours) =>
-      sampleContoursWithPointCounts(
-        contours,
-        pointCounts: [for (final c in contours) _pointsFor(c)],
-        fillRule: MorphFillRule.nonZero,
-      );
-
-  /// As morphnext samples an icon glyph: 16 points a curve, from 64 up to
-  /// 2048 in powers of two.
-  static int _pointsFor(CubicContour c) {
-    var n = 64;
-    while (n < c.segmentCount * 16 && n < 2048) {
-      n *= 2;
-    }
-    return n;
+    final glyph = _font.glyph(
+      codePoint,
+      weight: _weight,
+      opticalSize: _opticalSize,
+    );
+    if (glyph == null) return null;
+    // From the baseline to the ascender frame: x from the pen, y down from
+    // the ascender.
+    return GlyphOutline._(
+      glyph.placed(Offset(0, glyph.ascender)),
+      glyph.ascender,
+    );
   }
 }
 
 /// A glyph's outline as the font draws it, in ems (x from the pen position,
 /// y down from the font's ascender), not yet sampled for morphing.
 final class GlyphOutline {
-  GlyphOutline._(this._contours, this.ascender);
+  GlyphOutline._(this._outline, this.ascender);
 
-  final List<CubicContour> _contours;
+  final MorphOutline _outline;
 
   /// The font's ascender, in ems.
   final double ascender;
@@ -103,7 +74,7 @@ final class GlyphOutline {
 /// from the font's ascender. Or, from [GlyphShape.placed], several outlines
 /// as one shape.
 final class GlyphShape {
-  GlyphShape._(this._shape, this.ascender);
+  GlyphShape._(this._outline, this.ascender);
 
   /// Several outlines as one shape, each scaled by its `scale` and moved to
   /// (`x`, `y`): a word's letters where its layout puts them, so the whole
@@ -112,42 +83,33 @@ final class GlyphShape {
   static GlyphShape? placed(
     Iterable<({GlyphOutline outline, double x, double y, double scale})> parts,
   ) {
-    final contours = [
+    final outline = MorphOutline.combine([
       for (final p in parts)
-        for (final c in p.outline._contours)
-          CubicContour(
-            Float64List.fromList([
-              for (var k = 0; k < c.points.length; k += 2) ...[
-                p.x + c.points[k] * p.scale,
-                p.y + c.points[k + 1] * p.scale,
-              ],
-            ]),
-          ),
-    ];
-    if (contours.isEmpty) return null;
-    return GlyphShape._(GlyphFont._sample(contours), 0);
+        p.outline._outline.placed(Offset(p.x, p.y), scale: p.scale),
+    ]);
+    return outline == null ? null : GlyphShape._(outline, 0);
   }
 
-  final MorphShape _shape;
+  final MorphOutline _outline;
 
   /// The font's ascender, in ems.
   final double ascender;
 
   /// How many closed contours the outline has (o has two, i two, B three).
-  int get contourCount => _shape.contours.length;
+  int get contourCount => _outline.contourCount;
 }
 
 /// The morph from one glyph outline to another.
 final class GlyphMorph {
   /// Pairs [from]'s contours with [to]'s (morphnext's topology-aware plan).
   GlyphMorph(GlyphShape from, GlyphShape to)
-    : _plan = buildMorphPlan(from._shape, to._shape),
+    : _plan = MorphOutlinePlan(from._outline, to._outline),
       fromAscender = from.ascender,
       toAscender = to.ascender {
     _out = _plan.allocateOutput();
   }
 
-  final MorphPlan _plan;
+  final MorphOutlinePlan _plan;
   late final List<Float64List> _out;
 
   /// The `from` font's ascender, in ems.
@@ -166,9 +128,8 @@ final class GlyphMorph {
 
   /// Whether every contour of each outline paired with exactly one of the
   /// other: nothing grew from or shrank to a point.
-  bool get isOneToOne =>
-      _plan.items.every((i) => !i.sourceCollapsed && !i.targetCollapsed);
+  bool get isOneToOne => _plan.isOneToOne;
 
   /// How many contour pairs the morph draws.
-  int get pairCount => _plan.items.length;
+  int get pairCount => _plan.contourCount;
 }

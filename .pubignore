@@ -18,7 +18,5 @@ test/failures/
 doc/
 # the reel recorder and its fonts,
 tool/
-# the upstream API proposal for morphnext,
-upstream/
 # and CI.
 .github/
